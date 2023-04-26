@@ -51,7 +51,7 @@ def path_contains_rse_prefix( filepath_, rse_ ):
     proto   = client.get_protocols( rse=rse_ )
     if len(proto)>0:
         element = proto[0]
-        prefix  = proto['prefix']    
+        prefix  = element['prefix']
         result  = prefix in filepath_
     else:
         result = False
@@ -159,28 +159,18 @@ def add_file( args,extras ):
     # Assuming no errors have been identified
     if go == True:
 
-        md5 = None
-        if hasattr( extras, 'md5' ):
-            md5 = extras.md5
-        else:
+        # Get MD5 sum 
+        md5 = extras.get( 'md5', None)
+        if md5==None:
             md5 = sh.md5sum( args.pfn ).split()[0]
-
-        adler32 = None
-        if hasattr( extras, 'adler32' ):
-            adler32 = extras.adler32
-        else:
-            adler32 = sh.xrdadler32( args.pfn ).split()[0]
-
-        guid = None
-        if hasattr( extras, 'guid' ):
-            guid = extras.guid
-        else:
+            
+        adler32 = extras.get( 'adler32', None ) # by default no adler32 sum
+        
+        guid = extras.get( 'guid', None )
+        if guid==None:
             guid = str( uuid.uuid4() )
-
-        bytes_ = 0
-        if hasattr( extras, 'bytes' ):
-            bytes_ = extras.bytes
-        else:
+        bytes_ = extras.get( 'bytes', None )
+        if bytes_ == None:
             bytes_ = os.path.getsize( args.pfn )
         
         skip_extras = [ 'md5', 'adler32', 'guid', 'bytes' ]
@@ -195,19 +185,18 @@ def add_file( args,extras ):
             'name'   : name_,     # filename / data identifier
             'pfn'    : pfn_,      # physical filename (full path to file)
             'bytes'  : bytes_,    # size of file in bytes
-            'adler32': adler32,   # adler32 checksum
             'md5'    : md5,       # md5 checksum
             }
 
-        if args.verbose:
-            pprint.pprint(replica_)
+        if adler32:
+            replica_['adler32']=adler32
 
         #
         # Add files to the specified dataset, otherwise just add the files
         #
         if args.simulate:
             logging.info("Simulate adding file...")
-            pprint.pprint(replica)
+            pprint.pprint(replica_)
         else:        
             if args.dataset:
                 client.add_files_to_dataset( scope_, args.dataset, [replica_,], rse=args.rse )
@@ -235,7 +224,7 @@ def get_parser():
     addfile.add_argument( 'scope',             help="Specify the rucio scope for the file.")    
     addfile.add_argument( 'pfn',               help="Specify the full path to the physical file.  Logical filename (lfn) inferred from the filename.")
     addfile.add_argument( '--lfn', dest='lfn', help="Specify the logical filename (data identifier) for the file in rucio.  Will default to the filename.", type=str, default="" )
-    addfile.add_argument( '--rse', dest='rse', help="Specify the rucio storage element (rse) for the file.", default='MOCK' )
+    addfile.add_argument( '--rse', dest='rse', help="Specify the rucio storage element (rse) for the file.", default='BNL_PROD' )
     addfile.add_argument( '--dataset', dest='dataset', help="Specify the dataset into which the file will be added.", default=None )
     addfile.set_defaults( func=add_file )
 
@@ -265,8 +254,6 @@ def main():
 
     #logging.setLevel(20) # info level... debug at 10
 
-    print("main")
-
     args, globalvars = get_parser().parse_known_args()
 
     # Leftover arguments of the type --key=value are turned into a dictionary.
@@ -279,7 +266,6 @@ def main():
         extras[k] = v
 
     if hasattr( args, 'func' ):
-        print("calling func %s %s"%(args.command,str(args.func)))
         args.func(args,extras)
     else:
         logging.error("No function defined for command %s"%args.command)
