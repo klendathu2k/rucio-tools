@@ -1,0 +1,289 @@
+#!/usr/bin/env python3 
+
+from rucio.client import Client
+client = Client()
+
+from rucio.common.exception import DataIdentifierNotFound
+from rucio.common.exception import AccountNotFound
+
+import sh
+import os
+import pprint
+import uuid
+import logging
+import re
+
+import argparse
+
+def rse_exists( rse_ ):
+    rses = []
+    for rse in client.list_rses():
+        rses.append(rse['rse'])
+    result = rse_ in rses
+    return result
+
+def scope_exists( scope_ ):
+    scopes = client.list_scopes()
+    result = (scope_ in scopes)
+    return result
+
+def did_exists( scope_, did_ ):
+    result = True
+    try:
+        did = client.get_did( scope_, did_ )
+    except DataIdentifierNotFound:
+        result = False
+    return result
+
+def dataset_exists( scope_, dataset_ ):
+    result = True
+    if scope_exists( scope_ ):
+        try:
+            did = client.get_did( scope_, dataset_ )
+        except DataIdentifierNotFound:
+            result = False
+    else:
+        result = False
+    return result
+
+def path_contains_rse_prefix( filepath_, rse_ ):
+    result = True
+    proto   = client.get_protocols( rse=rse_ )
+    if len(proto)>0:
+        element = proto[0]
+        prefix  = proto['prefix']    
+        result  = prefix in filepath_
+    else:
+        result = False
+    return result
+    
+def account_exists( account_ ):
+    result = True
+    try:
+        who = client.get_account( account_ )
+    except AccountNotFound:
+        result = False
+    return result
+
+#_______________________________________________________________ add a scope to rucio __
+def add_scope( args, extras ):
+    acc = args.account
+    sco = args.scope
+    go = True
+
+    if account_exists( acc ) == False:
+        logging.error("Account %s does not exist"%acc )
+        go = False
+
+    if scope_exists( sco ):
+        logging.warning( "Specified scope %s already exists"%sco )
+        go = False
+
+    if go:
+        if args.simulate:
+            logging.info("Simulate add_scope %s"%sco )
+        else:
+            client.add_scope( sco )
+
+#_____________________________________________________________ add a dataset to rucio __
+def add_dataset( args, extras ):
+
+    logging.info("add_dataset")
+
+    if dataset_exists( args.scope, args.dataset ):
+        logging.warning("Dataset %s already exists"%args.dataset)
+    else:
+        if args.simulate:
+            print( "Simulate add_dataset scope=%s dataset=%s"%(args.scope,args.dataset))
+        else:
+            client.add_dataset( args.scope, args.dataset )
+    
+#_________________________________________________________ detach dids from datasets __
+def clear_dataset( args, extras ):
+
+    if dataset_exists( args.scope, args.dataset ):
+        dids_ = []
+        try:
+            for did_ in client.list_content( args.scope, args.dataset ):
+                dids_.append( did_ )       
+                client.detach_dids( args.scope, args.dataset, dids_ )
+        except DataIdentifierNotFound:
+            logging.warning("Dataset %s is already empty"%args.dataset)
+    else:
+        logging.warning("Dataset %s does not exist"%args.dataset)
+
+
+#________________________________________________________________ add a file to rucio __
+def add_file( args,extras ):
+
+    # Remains true as long as none of the following checks fail...
+    go = True
+
+    # Verify that the requested scope exists
+    if scope_exists( args.scope ) == False:
+        logging.error( "Scope %s does not exist.  Exiting." % args.scope )
+        go = False
+
+    # If we are adding this to a dataset, make sure that it exits
+    if args.dataset:
+        if dataset_exists( args.scope, args.dataset ) == False:
+            logging.error( "Dataset %s does not exist.  Exiting." % args.dataset )
+            go = False
+
+    # Verify that the specified file exits
+    if os.path.exists( args.pfn ) == False:
+        logging.error( "Specified filepath does not exist %s" % args.pfn )
+        go = False
+
+    # Verify that the specifed RSE exists
+    if rse_exists( args.rse ) == False:
+        logging.error( "Specified rucio storage element (RSE) does not exits %s.  Exiting."%args.rse )
+        go = False
+
+    # Verify that the file is on the resource
+    if path_contains_rse_prefix( args.pfn, args.rse ) == False:
+        logging.error( "Specified PFN %s is not on the storage element %s"%(args.pfn, args.rse) )
+        go = False
+
+    # Set the logical filename to register this file as
+    head, lfn = os.path.split( args.pfn )
+    if not args.lfn == "":
+        lfn = args.lfn
+    args.lfn = lfn
+
+    # If the data identifier already exists, we take no action
+    if did_exists( args.scope, lfn ):
+        logging.warning( "Data identifier %s already exists.  Exiting." % lfn)
+        go = False
+
+    # Assuming no errors have been identified
+    if go == True:
+
+        md5 = None
+        if hasattr( extras, 'md5' ):
+            md5 = extras.md5
+        else:
+            md5 = sh.md5sum( args.pfn ).split()[0]
+
+        adler32 = None
+        if hasattr( extras, 'adler32' ):
+            adler32 = extras.adler32
+        else:
+            adler32 = sh.xrdadler32( args.pfn ).split()[0]
+
+        guid = None
+        if hasattr( extras, 'guid' ):
+            guid = extras.guid
+        else:
+            guid = str( uuid.uuid4() )
+
+        bytes_ = 0
+        if hasattr( extras, 'bytes' ):
+            bytes_ = extras.bytes
+        else:
+            bytes_ = os.path.getsize( args.pfn )
+        
+        skip_extras = [ 'md5', 'adler32', 'guid', 'bytes' ]
+        
+        scope_ = args.scope
+        name_  = lfn
+    
+        pfn_   = ( 'file://localhost' + ('/' + args.pfn).replace('//','/') )
+    
+        replica_ = {
+            'scope'  : scope_,    # user scope
+            'name'   : name_,     # filename / data identifier
+            'pfn'    : pfn_,      # physical filename (full path to file)
+            'bytes'  : bytes_,    # size of file in bytes
+            'adler32': adler32,   # adler32 checksum
+            'md5'    : md5,       # md5 checksum
+            }
+
+        if args.verbose:
+            pprint.pprint(replica_)
+
+        #
+        # Add files to the specified dataset, otherwise just add the files
+        #
+        if args.simulate:
+            logging.info("Simulate adding file...")
+            pprint.pprint(replica)
+        else:        
+            if args.dataset:
+                client.add_files_to_dataset( scope_, args.dataset, [replica_,], rse=args.rse )
+            else:
+                client.add_replicas( rse=args.rse, files=[ replica_, ] )
+
+            client.set_metadata( scope_, name_, 'guid', guid )
+
+            for k,v in extras.items():
+                if k in skip_extras:
+                    pass
+                else:
+                    client.set_metadata( scope_, name_, k, v )
+
+
+def get_parser():
+    parser     = argparse.ArgumentParser(description='Registers data files and datasets with rucio')
+    parser.add_argument( '--verbose', action="store_true", default=False )
+    parser.add_argument( '--simulate',action="store_true",  help="Print but do not execute action", default=False)
+
+    subparsers = parser.add_subparsers(dest='command')
+
+    # Add single files to rucio 
+    addfile = subparsers.add_parser( 'add-file', help='Adds a given file to rucio.  Metadata may be set by specifying --key=value.')
+    addfile.add_argument( 'scope',             help="Specify the rucio scope for the file.")    
+    addfile.add_argument( 'pfn',               help="Specify the full path to the physical file.  Logical filename (lfn) inferred from the filename.")
+    addfile.add_argument( '--lfn', dest='lfn', help="Specify the logical filename (data identifier) for the file in rucio.  Will default to the filename.", type=str, default="" )
+    addfile.add_argument( '--rse', dest='rse', help="Specify the rucio storage element (rse) for the file.", default='MOCK' )
+    addfile.add_argument( '--dataset', dest='dataset', help="Specify the dataset into which the file will be added.", default=None )
+    addfile.set_defaults( func=add_file )
+
+
+    # Add a new scope to rucio
+    addscope = subparsers.add_parser( 'add-scope', help='Adds a new scope to the sphnxpro account in rucio.')
+    addscope.add_argument( 'scope', help='Name of the new scope' )
+    addscope.add_argument( '--account', help='Name of the account to add the scope to (default sphnxpro).', default='sphnxpro' )
+    addscope.set_defaults( func=add_scope )
+
+    # Add a new dataset to rucio.  Optionally create and/or attach to a hierarchy of containers.
+    adddataset = subparsers.add_parser( 'add-dataset', help='Adds a new dataset.')
+    adddataset.add_argument( 'scope', help='Name of the new dataset' )
+    adddataset.add_argument( 'dataset', help='Name of dataset OR /container1/.../containerN/dataset-name.' )
+    adddataset.set_defaults( func=add_dataset )
+
+    # Add a new dataset to rucio.  Optionally create and/or attach to a hierarchy of containers.
+    adddataset = subparsers.add_parser( 'clear-dataset', help='Detatches all dids from the dataset')
+    adddataset.add_argument( 'scope', help='Name of the new dataset' )
+    adddataset.add_argument( 'dataset', help='Name of dataset OR /container1/.../containerN/dataset-name.' )
+    adddataset.set_defaults( func=clear_dataset )
+
+    return parser
+
+    
+def main():
+
+    #logging.setLevel(20) # info level... debug at 10
+
+    print("main")
+
+    args, globalvars = get_parser().parse_known_args()
+
+    # Leftover arguments of the type --key=value are turned into a dictionary.
+
+    extras = {}
+    for gl in globalvars:
+        gl = gl.strip('--')
+        gl = gl.strip('-')
+        (k,v) = gl.split('=')
+        extras[k] = v
+
+    if hasattr( args, 'func' ):
+        print("calling func %s %s"%(args.command,str(args.func)))
+        args.func(args,extras)
+    else:
+        logging.error("No function defined for command %s"%args.command)
+    
+
+if __name__ == '__main__':
+    main()
