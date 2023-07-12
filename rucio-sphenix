@@ -211,6 +211,31 @@ def add_file( args,extras ):
                 else:
                     client.set_metadata( scope_, name_, k, v )
 
+#____________________________________________________________ erase a file from rucio __
+def erase_did( args,extras ):
+
+    # I have a fever...
+    logging.info("More cowbell.")
+
+    go = True
+
+    # Verify that the requested scope exists
+    if scope_exists( args.scope ) == False:
+        logging.error( "Scope %s does not exist.  Exiting." % args.scope )
+        go = False
+
+    # Verify that the logical filename exits
+    if not did_exists( args.scope, args.did ):
+        logging.warning( "Data identifier %s does not exist.  Exiting." % did)
+        go = False        
+
+    if go:
+        scope_ = args.scope
+        name_  = args.did
+
+        # We can now schedule the did for removal    
+        client.set_metadata( scope_, name_, 'lifetime', args.lifetime )        
+        
 
 def get_parser():
     parser     = argparse.ArgumentParser(description='Registers data files and datasets with rucio')
@@ -227,6 +252,14 @@ def get_parser():
     addfile.add_argument( '--rse', dest='rse', help="Specify the rucio storage element (rse) for the file.", default='BNL_PROD' )
     addfile.add_argument( '--dataset', dest='dataset', help="Specify the dataset into which the file will be added.", default=None )
     addfile.set_defaults( func=add_file )
+
+    # client.set_metadata(scope=scope, name=name, key='lifetime', value=86400)
+    erasefile = subparsers.add_parser( 'erase-did', help='Schedules a given did to be un-registered from rucio filecatalog.')
+    erasefile.add_argument( 'scope',             help="Specify the rucio scope for the file.")    
+    erasefile.add_argument( 'did',               help="Specify the data identifier to be removed.")
+    erasefile.add_argument( '--lifetime',default=24*3600,help="Set the remaining lifetime of the did in seconds.")
+    erasefile.set_defaults( func=erase_did )
+
 
 
     # Add a new scope to rucio

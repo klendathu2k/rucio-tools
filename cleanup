@@ -1,0 +1,15 @@
+#!/usr/bin/bash -f
+
+filepath=$1
+did=${1##*/}
+gdid=`rucio ls --filter type=FILE ${did} --short`
+echo $gdid
+scope=${gdid%:*}
+rucio erase ${gdid}
+rm $filepath
+
+#rucio-sphenix erase-did --lifetime 30 ${scope} ${did}
+
+# remove the file...
+#rm $filepath
+
